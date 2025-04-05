@@ -1,0 +1,117 @@
+//@version=6
+strategy("FVG Strategy", overlay=true)
+import TradingView/ta/9
+
+// === Inputs ===
+tpMultiplier = input.float(4.2, title="Take Profit Multiplier")
+slMultiplier = input.float(1.25, title="Stop Loss Multiplier")
+fvgMinSize = input.float(0.75, title="Min FVG Size (points)")
+fvgMaxSize = input.float(3.75, title="Max FVG Size (points)")
+maxTimeMinutes = input.int(16, title="Max Time for FVG (minutes)")
+
+// === Variables ===
+var box[] fvgBoxes = array.new_box(0) // Store FVG boxes (using box instead of line)
+var bool inTrade = false // Track if currently in a trade
+var float entryPrice = na // Store entry price
+var float fvgSize = na // Store current FVG size
+var int entryDirection = na // Store trade direction
+var int fvgStartBar = na // Track FVG creation bar index
+
+// === Helper Functions ===
+// Calculate FVG size
+calcFvgSize(high1, low3) =>
+    math.abs(high1 - low3)
+
+// Check if a candle sequence forms a valid FVG
+isValidFVG(high1, low3, size) =>
+    size >= fvgMinSize and size <= fvgMaxSize
+
+// === Logic ===
+// Look for FVG patterns
+if barstate.isconfirmed
+    // Bullish FVG (low of current bar > high of previous bar)
+    if low > high[1] and not inTrade
+        float fvgHigh = low
+        float fvgLow = high[1]
+        float size = calcFvgSize(fvgHigh, fvgLow)
+        
+        if isValidFVG(fvgHigh, fvgLow, size)
+            box fvgBox = box.new(bar_index-1, fvgHigh, bar_index, fvgLow, bgcolor=color.new(color.green, 80), border_color=color.green)
+            array.push(fvgBoxes, fvgBox)
+            fvgStartBar := bar_index
+            fvgSize := size
+            entryPrice := (fvgHigh + fvgLow) / 2
+            entryDirection := strategy.long
+            strategy.entry("Long FVG", strategy.long, limit=entryPrice)
+            inTrade := true
+
+    // Bearish FVG (high of current bar < low of previous bar)
+    if high < low[1] and not inTrade
+        float fvgHigh = low[1]
+        float fvgLow = high
+        float size = calcFvgSize(fvgHigh, fvgLow)
+        
+        if isValidFVG(fvgHigh, fvgLow, size)
+            box fvgBox = box.new(bar_index-1, fvgHigh, bar_index, fvgLow, bgcolor=color.new(color.red, 80), border_color=color.red)
+            array.push(fvgBoxes, fvgBox)
+            fvgStartBar := bar_index
+            fvgSize := size
+            entryPrice := (fvgHigh + fvgLow) / 2
+            entryDirection := strategy.short
+            strategy.entry("Short FVG", strategy.short, limit=entryPrice)
+            inTrade := true
+
+// Manage trades (TP/SL, breakeven adjustment)
+if inTrade
+    // Define stop loss price
+    float slPrice = na
+    if entryDirection == strategy.long
+        slPrice := entryPrice - slMultiplier * fvgSize
+    else
+        slPrice := entryPrice + slMultiplier * fvgSize
+    
+    // Define take profit price
+    float tpPrice = na
+    if entryDirection == strategy.long
+        tpPrice := entryPrice + tpMultiplier * fvgSize
+    else
+        tpPrice := entryPrice - tpMultiplier * fvgSize
+    
+    // Set exit orders
+    if entryDirection == strategy.long
+        strategy.exit("Exit Long", "Long FVG", stop=slPrice, limit=tpPrice)
+    else
+        strategy.exit("Exit Short", "Short FVG", stop=slPrice, limit=tpPrice)
+    
+    // Move to breakeven when price moves in our favor by 40% of the target
+    if entryDirection == strategy.long and close >= entryPrice + 0.4 * (tpPrice - entryPrice)
+        strategy.exit("BE Exit Long", "Long FVG", stop=entryPrice)
+    else if entryDirection == strategy.short and close <= entryPrice - 0.4 * (entryPrice - tpPrice)
+        strategy.exit("BE Exit Short", "Short FVG", stop=entryPrice)
+    
+    // Reset trade state if stopped out or TP hit
+    if (strategy.position_size == 0)
+        inTrade := false
+        entryPrice := na
+        fvgSize := na
+        entryDirection := na
+
+// Updated logic to change FVG box colors to grey or white instead of removing them
+if array.size(fvgBoxes) > 0
+    for i = array.size(fvgBoxes) - 1 to 0
+        box currentBox = array.get(fvgBoxes, i)
+        int boxStartBar = box.get_left_index(currentBox)
+        
+        // Check if the FVG is too old
+        conditionCheck = bar_index - boxStartBar > maxTimeMinutes * 60 / timeframe.in_seconds()
+        if conditionCheck
+            // Change color to grey (for red FVGs) or white (for green FVGs)
+            box.set_bgcolor(currentBox, color.new(color.red, 90) if box.get_border_color(currentBox) == color.red else color.new(color.white, 90))
+            box.set_border_color(currentBox, color.gray)
+        
+        // Optional: Remove redundant or overlapping FVGs
+        // Uncomment and implement the logic if needed
+        conditionOverlap = /* logic to detect overlap or redundancy */
+        if conditionOverlap
+            box.delete(currentBox)
+            array.remove(fvgBoxes, i)
