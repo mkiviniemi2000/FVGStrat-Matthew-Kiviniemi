@@ -1,0 +1,97 @@
+//@version=6
+strategy("FVG Strategy", overlay=true)
+
+// === Inputs ===
+tpMultiplier = input.float(4.2, title="Take Profit Multiplier")
+slMultiplier = input.float(1.25, title="Stop Loss Multiplier")
+fvgMinSize = input.float(0.75, title="Min FVG Size (points)")
+fvgMaxSize = input.float(3.75, title="Max FVG Size (points)")
+maxTimeMinutes = input.int(16, title="Max Time for FVG (minutes)")
+
+// === Variables ===
+var bool inTrade = false
+var float entryPrice = na
+var string entryDirection = na
+var int fvgStartBar = na
+var float fvgSize = na
+
+// === Helper Functions ===
+// Calculate FVG size
+calcFvgSize(high1, low3) =>
+    math.abs(high1 - low3)
+
+// Check if a candle sequence forms a valid FVG
+isValidFVG(high1, low3, size) =>
+    size >= fvgMinSize and size <= fvgMaxSize
+
+// Check if FVG is still valid
+isFvgStillValid(startBar) =>
+    bar_index - startBar <= maxTimeMinutes * 60 / timeframe.in_seconds()
+
+// === Logic ===
+// Look for FVG patterns
+if not inTrade and barstate.isconfirmed
+    // Bullish FVG
+    if low[1] > high[3]
+        float fvgHigh = low[1]
+        float fvgLow = high[3]
+        float size = calcFvgSize(fvgHigh, fvgLow)
+        if isValidFVG(fvgHigh, fvgLow, size)
+            entryPrice := (fvgHigh + fvgLow) / 2 + 0.25
+            fvgStartBar := bar_index
+            fvgSize := size
+            entryDirection := "long"
+            strategy.entry("Long FVG", strategy.long, limit=entryPrice)
+
+    // Bearish FVG
+    if high[1] < low[3]
+        float fvgHigh = low[3]
+        float fvgLow = high[1]
+        float size = calcFvgSize(fvgHigh, fvgLow)
+        if isValidFVG(fvgHigh, fvgLow, size)
+            entryPrice := (fvgHigh + fvgLow) / 2 - 0.25
+            fvgStartBar := bar_index
+            fvgSize := size
+            entryDirection := "short"
+            strategy.entry("Short FVG", strategy.short, limit=entryPrice)
+
+// Manage trades
+if inTrade
+    // Stop Loss
+    float slPrice = na
+    if entryDirection == "long"
+        slPrice := entryPrice - slMultiplier * fvgSize
+    else
+        slPrice := entryPrice + slMultiplier * fvgSize
+
+    // Take Profit
+    float tpPrice = na
+    if entryDirection == "long"
+        tpPrice := entryPrice + tpMultiplier * fvgSize
+    else
+        tpPrice := entryPrice - tpMultiplier * fvgSize
+
+    // Set exit orders
+    if entryDirection == "long"
+        strategy.exit("Exit Long", "Long FVG", stop=slPrice, limit=tpPrice)
+    else
+        strategy.exit("Exit Short", "Short FVG", stop=slPrice, limit=tpPrice)
+
+    // Breakeven adjustment
+    if entryDirection == "long" and close >= entryPrice + 0.4 * (tpPrice - entryPrice)
+        strategy.exit("BE Exit Long", "Long FVG", stop=entryPrice)
+    else if entryDirection == "short" and close <= entryPrice - 0.4 * (entryPrice - tpPrice)
+        strategy.exit("BE Exit Short", "Short FVG", stop=entryPrice)
+
+    // Reset trade state
+    if strategy.position_size == 0
+        inTrade := false
+        entryPrice := na
+        fvgSize := na
+        entryDirection := na
+
+// Invalidate FVG if too old
+if not inTrade and not isFvgStillValid(fvgStartBar)
+    entryPrice := na
+    fvgSize := na
+    entryDirection := na
